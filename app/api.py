@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import uuid
 from typing import Annotated
@@ -48,18 +49,19 @@ def submit(job: JobRequest, idempotency_key: Annotated[str, Header(min_length=8,
     r = redis_client()
     idem = "idem:" + idempotency_key
     job_id = str(uuid.uuid4())
+    fingerprint = hashlib.sha256(json.dumps(job.model_dump(), sort_keys=True).encode("utf-8")).hexdigest()
     # Not atomic with XADD; document the failure window in README.
     if not r.set(idem, job_id, nx=True, ex=86400):
         existing = r.get(idem)
         if not existing:
             raise HTTPException(status_code=409, detail="idempotency race")
         old = r.hgetall("job:" + existing)
-        if old and old.get("operation") != job.operation:
-            raise HTTPException(status_code=409, detail="idempotency key reused for different operation")
+        if old and old.get("fingerprint") != fingerprint:
+            raise HTTPException(status_code=409, detail="idempotency key reused for different request")
         return {"job_id": existing, "status": old.get("status", "pending")}
 
     try:
-        r.hset("job:" + job_id, mapping={"status": "queued", "operation": job.operation, "input": job.input})
+        r.hset("job:" + job_id, mapping={"status": "queued", "operation": job.operation, "input": job.input, "fingerprint": fingerprint})
         r.expire("job:" + job_id, 86400)
         r.xadd(STREAM, {"job_id": job_id}, maxlen=10000, approximate=True)
     except RedisError:
@@ -76,7 +78,7 @@ def get_job(job_id: str):
     job = redis_client().hgetall("job:" + job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
-    return {k: json.loads(v) if k == "result" else v for k, v in job.items() if k != "input"}
+    return {k: json.loads(v) if k == "result" else v for k, v in job.items() if k not in {"input", "fingerprint"}}
 
 
 class Evidence(BaseModel):
