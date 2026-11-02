@@ -1,0 +1,34 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server","--appendonly","yes"]
+    volumes: ["redis-data:/data"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  qdrant:
+    image: qdrant/qdrant:v1.12.5
+    volumes: ["qdrant-data:/qdrant/storage"]
+    ports: ["127.0.0.1:6333:6333"]
+    restart: unless-stopped
+  api:
+    build: .
+    environment: ["REDIS_URL=redis://redis:6379/0","QDRANT_URL=http://qdrant:6333"]
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      redis: {condition: service_healthy}
+      qdrant: {condition: service_started}
+    restart: unless-stopped
+  worker:
+    build: .
+    command: ["python","-m","app.worker"]
+    environment: ["REDIS_URL=redis://redis:6379/0"]
+    depends_on:
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+volumes:
+  redis-data:
+  qdrant-data:
